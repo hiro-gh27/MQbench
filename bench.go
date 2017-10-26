@@ -20,17 +20,18 @@ import (
 
 var (
 	//base        = "MQbench"
-	logger      *zap.Logger
-	qos         byte
-	retain      bool
-	topic       string
-	size        int
-	baseMSG     string
-	load        float64
-	config      string
-	clientNum   = 0
-	publishers  []mqtt.Client
-	subscribers []mqtt.Client
+	logger       *zap.Logger
+	qos          byte
+	retain       bool
+	topic        string
+	size         int
+	baseMSG      string
+	load         float64
+	config       string
+	clientNum    = 0
+	publishers   []mqtt.Client
+	subscribers  []mqtt.Client
+	timeLocation *time.Location
 )
 
 const (
@@ -58,6 +59,7 @@ func main() {
 
 	rand.Seed(time.Now().UnixNano())
 	runtime.GOMAXPROCS(runtime.NumCPU())
+	timeLocation, _ = time.LoadLocation("Asia/Tokyo")
 
 	//logの初期化
 	configJSON, err := ioutil.ReadFile("./config/logging.json")
@@ -72,7 +74,18 @@ func main() {
 	defer logger.Sync()
 
 	lancher()
-	executePublish(publishers)
+
+	ch := make(chan map[time.Time]time.Time)
+	setSubscriber(subscribers, ch)
+
+	execute(publishers)
+
+	time.Sleep(time.Second * 10)
+	result := <-ch
+
+	for key, val := range result {
+		fmt.Printf("key:%s, val:%s", key, val)
+	}
 
 	disconnectALL(publishers)
 	disconnectALL(subscribers)
@@ -146,7 +159,68 @@ func disconnectALL(clinets []mqtt.Client) {
 	}
 }
 
-func executePublish(publishers []mqtt.Client) {
+func setSubscriber(subscribers []mqtt.Client, tsStore chan map[time.Time]time.Time) {
+	var msgStore map[time.Time]time.Time
+	//eachStore := make([]map[time.Time]time.Time, len(subscribers))
+	//var s []map[time.Time]time.Time
+	//exitSignal := sync.WaitGroup{}
+	//exitSignal.Add(1)
+	// /eachStrStore := make(map[string]string, len(subscribers))
+	//fmt.Printf("size:%d", len(eachStore))
+	//store := map[string]string
+
+	//var each map[time.Time]time.Time
+
+	for index := 0; index < len(subscribers); index++ {
+		id := index
+		s := subscribers[id]
+		topic := fmt.Sprintf("%05d", id)
+		m := map[time.Time]time.Time{}
+		//each = append(each, m)
+		//m := eachStore[id]
+		//store := each[index]
+		m[time.Now()] = time.Now()
+		var callback mqtt.MessageHandler = func(c mqtt.Client, msg mqtt.Message) {
+			//c := 0
+			st := time.Now()
+			sst := st.Format(stampMQTT)
+			p := msg.Payload()
+			spt := string(p[:35])
+			fmt.Println(sst + "/" + spt)
+			pt, _ := time.Parse(stampMQTT, spt)
+			fmt.Printf("id:%s, pubTime:%s, subTime:%s\n", topic, pt, st.Format(stampMQTT))
+			//store[spt] = sst
+			//m[0] = st
+			//m[pt] = st
+		}
+		token := s.Subscribe(topic, qos, callback)
+		if token.Wait() && token.Error() != nil {
+			fmt.Printf("Subscribe Error: %s\n", token.Error())
+		}
+		//exitSignal.Wait()
+	}
+	/*
+		go func() {
+			time.Sleep(time.Second * 40)
+			//exitSignal.Done()
+			for index := 0; index < len(subscribers); index++ {
+				e := eachStore[index]
+				for key, value := range e {
+					fmt.Printf("key:%s, val:%s", key, value)
+					//msgStore[key] = value
+				}
+			}
+			tsStore <- msgStore
+		}()
+	*/
+	go func() {
+		time.Sleep(time.Second * 40)
+		tsStore <- msgStore
+	}()
+
+}
+
+func execute(publishers []mqtt.Client) {
 	//初期化
 	var allPublishedTimeStamp []time.Time
 
@@ -211,7 +285,6 @@ func executePublish(publishers []mqtt.Client) {
 	for index := 0; index < len(allPublishedTimeStamp); index++ {
 		fmt.Printf("index:%d, ts:%s\n", index, allPublishedTimeStamp[index])
 	}
-
 	total := allPublishedTimeStamp[len(allPublishedTimeStamp)-1].Sub(allPublishedTimeStamp[0])
 	millDuration := float64(total.Nanoseconds()) / math.Pow10(6)
 	th := float64(len(allPublishedTimeStamp)) / millDuration

@@ -72,7 +72,6 @@ func main() {
 	defer logger.Sync()
 
 	lancher()
-
 	executePublish(publishers)
 
 	disconnectALL(publishers)
@@ -80,13 +79,20 @@ func main() {
 }
 
 func lancher() {
-	qos = byte(*flag.Int("qos", 0, "MQTT QoS(0|1|2)"))
-	retain = *flag.Bool("retain", false, "MQTT Retain")
-	topic = *flag.String("topic", "", "Base topic")
-	size = *flag.Int("size", 100, "Message size per publish (byte)")
-	load = *flag.Float64("load", 30, "publish/ms")
-	config = *flag.String("file", "NONE", "Base file name")
+	qosFlag := flag.Int("qos", 0, "MQTT QoS(0|1|2)")
+	retainFlag := flag.Bool("retain", false, "MQTT Retain")
+	topicFlag := flag.String("topic", "", "Base topic")
+	sizeFlag := flag.Int("size", 100, "Message size per publish (byte)")
+	loadFlag := flag.Float64("load", 30, "publish/ms")
+	configFlag := flag.String("file", "NONE", "Base file name")
 	flag.Parse()
+
+	qos = byte(*qosFlag)
+	retain = *retainFlag
+	topic = *topicFlag
+	size = *sizeFlag
+	load = *loadFlag
+	config = *configFlag
 
 	logger.Debug(fmt.Sprintf("qos: %d, retain: %t, topic: %s, size: %d, load: %f",
 		qos, retain, topic, size, load))

@@ -161,58 +161,57 @@ func disconnectALL(clinets []mqtt.Client) {
 
 func setSubscriber(subscribers []mqtt.Client, tsStore chan map[time.Time]time.Time) {
 	var msgStore map[time.Time]time.Time
-	//eachStore := make([]map[time.Time]time.Time, len(subscribers))
-	//var s []map[time.Time]time.Time
-	//exitSignal := sync.WaitGroup{}
-	//exitSignal.Add(1)
-	// /eachStrStore := make(map[string]string, len(subscribers))
-	//fmt.Printf("size:%d", len(eachStore))
-	//store := map[string]string
+	var storePointer []*map[time.Time]time.Time
 
-	//var each map[time.Time]time.Time
+	msgTimeStamps := make([][]string, len(subscribers))
+
+	var finalTry []*[]string
 
 	for index := 0; index < len(subscribers); index++ {
 		id := index
 		s := subscribers[id]
+		var strList []string
+		finalTry = append(finalTry, &strList)
+		msgTimeStamps[index] = strList
+		//mTS := msgTimeStamps[id]
+
 		topic := fmt.Sprintf("%05d", id)
-		m := map[time.Time]time.Time{}
-		//each = append(each, m)
-		//m := eachStore[id]
-		//store := each[index]
-		m[time.Now()] = time.Now()
+		tsMap := map[time.Time]time.Time{}
+		storePointer = append(storePointer, &tsMap)
+		tsMap[time.Now()] = time.Now()
 		var callback mqtt.MessageHandler = func(c mqtt.Client, msg mqtt.Message) {
-			//c := 0
 			st := time.Now()
 			sst := st.Format(stampMQTT)
 			p := msg.Payload()
 			spt := string(p[:35])
-			fmt.Println(sst + "/" + spt)
+			//fmt.Println(sst + "/" + spt)A
 			pt, _ := time.Parse(stampMQTT, spt)
-			fmt.Printf("id:%s, pubTime:%s, subTime:%s\n", topic, pt, st.Format(stampMQTT))
-			//store[spt] = sst
-			//m[0] = st
-			//m[pt] = st
+			tsMap[pt] = st
+			strList = append(strList, spt+sst)
+			//fmt.Printf("id:%s, pubTime:%s, subTime:%s\n", topic, pt, st.Format(stampMQTT))
 		}
 		token := s.Subscribe(topic, qos, callback)
 		if token.Wait() && token.Error() != nil {
 			fmt.Printf("Subscribe Error: %s\n", token.Error())
 		}
-		//exitSignal.Wait()
 	}
-	/*
-		go func() {
-			time.Sleep(time.Second * 40)
-			//exitSignal.Done()
-			for index := 0; index < len(subscribers); index++ {
-				e := eachStore[index]
-				for key, value := range e {
-					fmt.Printf("key:%s, val:%s", key, value)
-					//msgStore[key] = value
+	go func() {
+		time.Sleep(time.Second * 40)
+		for _, ts := range finalTry {
+			for _, test := range *ts {
+				fmt.Printf("input str is:f%s\n", test)
+			}
+		}
+		/*
+			for _, s := range storePointer {
+				for key, val := range *s {
+					fmt.Printf("pub:%s, sub:%s", key, val)
 				}
 			}
-			tsStore <- msgStore
-		}()
-	*/
+		*/
+		tsStore <- msgStore
+	}()
+
 	go func() {
 		time.Sleep(time.Second * 40)
 		tsStore <- msgStore

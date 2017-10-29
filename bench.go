@@ -45,6 +45,12 @@ const (
 
 type timeSort []time.Time
 
+type pubsubTimeStamp struct {
+	topic      string
+	published  time.Time
+	subscribed time.Time
+}
+
 func (x timeSort) Len() int { return len(x) }
 func (x timeSort) Less(i, j int) bool {
 	itime := x[i]
@@ -96,7 +102,7 @@ func lancher() {
 	retainFlag := flag.Bool("retain", false, "MQTT Retain")
 	topicFlag := flag.String("topic", "", "Base topic")
 	sizeFlag := flag.Int("size", 100, "Message size per publish (byte)")
-	loadFlag := flag.Float64("load", 30, "publish/ms")
+	loadFlag := flag.Float64("load", 5, "publish/ms")
 	configFlag := flag.String("file", "NONE", "Base file name")
 	flag.Parse()
 
@@ -161,34 +167,26 @@ func disconnectALL(clinets []mqtt.Client) {
 
 func setSubscriber(subscribers []mqtt.Client, tsStore chan map[time.Time]time.Time) {
 	var msgStore map[time.Time]time.Time
-	var storePointer []*map[time.Time]time.Time
-
-	msgTimeStamps := make([][]string, len(subscribers))
-
-	var finalTry []*[]string
-
+	rVals := make([]*[]pubsubTimeStamp, len(subscribers))
 	for index := 0; index < len(subscribers); index++ {
 		id := index
 		s := subscribers[id]
-		var strList []string
-		finalTry = append(finalTry, &strList)
-		msgTimeStamps[index] = strList
-		//mTS := msgTimeStamps[id]
-
 		topic := fmt.Sprintf("%05d", id)
-		tsMap := map[time.Time]time.Time{}
-		storePointer = append(storePointer, &tsMap)
-		tsMap[time.Now()] = time.Now()
+		rVal := []pubsubTimeStamp{}
+		rVals[id] = &rVal
+
 		var callback mqtt.MessageHandler = func(c mqtt.Client, msg mqtt.Message) {
-			st := time.Now()
-			sst := st.Format(stampMQTT)
-			p := msg.Payload()
-			spt := string(p[:35])
-			//fmt.Println(sst + "/" + spt)A
+			var psts pubsubTimeStamp
+			sst := time.Now().Format(stampMQTT)
+			st, _ := time.Parse(stampMQTT, sst)
+			spt := string(msg.Payload()[:35])
 			pt, _ := time.Parse(stampMQTT, spt)
-			tsMap[pt] = st
-			strList = append(strList, spt+sst)
-			//fmt.Printf("id:%s, pubTime:%s, subTime:%s\n", topic, pt, st.Format(stampMQTT))
+
+			psts.topic = msg.Topic()
+			psts.published = pt
+			psts.subscribed = st
+			rVal = append(rVal, psts)
+			logger.Debug(fmt.Sprintf("topic:%s pub:%s, sub%s\n", psts.topic, psts.published, psts.subscribed))
 		}
 		token := s.Subscribe(topic, qos, callback)
 		if token.Wait() && token.Error() != nil {
@@ -196,27 +194,16 @@ func setSubscriber(subscribers []mqtt.Client, tsStore chan map[time.Time]time.Ti
 		}
 	}
 	go func() {
-		time.Sleep(time.Second * 40)
-		for _, ts := range finalTry {
-			for _, test := range *ts {
-				fmt.Printf("input str is:f%s\n", test)
+		time.Sleep(time.Second * 20)
+		for index := 0; index < len(subscribers); index++ {
+			rvs := *rVals[index]
+			fmt.Printf("len(rvs)=%d\n", len(rvs))
+			for _, r := range rvs {
+				fmt.Printf("topic:%s pub:%s, sub%s\n", r.topic, r.published, r.subscribed)
 			}
 		}
-		/*
-			for _, s := range storePointer {
-				for key, val := range *s {
-					fmt.Printf("pub:%s, sub:%s", key, val)
-				}
-			}
-		*/
 		tsStore <- msgStore
 	}()
-
-	go func() {
-		time.Sleep(time.Second * 40)
-		tsStore <- msgStore
-	}()
-
 }
 
 func execute(publishers []mqtt.Client) {
@@ -247,7 +234,7 @@ func execute(publishers []mqtt.Client) {
 					gap := time.Now().Sub(startTS)
 					ideal := time.Duration(maxInterval * 1000 * 1000 * float64(count))
 					wait := ideal - gap
-					fmt.Printf("gap=%s, ideal=%s\n", gap, ideal)
+					logger.Debug(fmt.Sprintf("gap=%s, ideal=%s\n", gap, ideal))
 					if wait > 0 {
 						time.Sleep(wait)
 					}
@@ -282,7 +269,7 @@ func execute(publishers []mqtt.Client) {
 	sort.Sort(timeSort(allPublishedTimeStamp))
 	fmt.Printf("len(allPublishedTimeStamp:%d\n", len(allPublishedTimeStamp))
 	for index := 0; index < len(allPublishedTimeStamp); index++ {
-		fmt.Printf("index:%d, ts:%s\n", index, allPublishedTimeStamp[index])
+		//fmt.Printf("index:%d, ts:%s\n", index, allPublishedTimeStamp[index])
 	}
 	total := allPublishedTimeStamp[len(allPublishedTimeStamp)-1].Sub(allPublishedTimeStamp[0])
 	millDuration := float64(total.Nanoseconds()) / math.Pow10(6)

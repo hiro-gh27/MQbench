@@ -34,6 +34,15 @@ var (
 	timeLocation *time.Location
 )
 
+// 評価に使う時間
+var (
+	evaluateStartTime time.Time
+
+	warmUp     = time.Second * 5
+	production = time.Second * 5
+	coolDown   = time.Second * 5
+)
+
 const (
 	letters       = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 	letterIdxBits = 6
@@ -79,19 +88,51 @@ func main() {
 	logger, _ = myConfig.Build()
 	defer logger.Sync()
 
+	/*
+		ここから実行メソッド
+	*/
 	lancher()
+	wg := sync.WaitGroup{}
+	wg.Add(1)
 
-	ch := make(chan map[time.Time]time.Time)
-	setSubscriber(subscribers, ch)
+	var subscribeData []pubsubTimeStamp
+	go func() {
+		defer wg.Done()
+		subscribeData = setSubscriber(subscribers)
+		//setSubscriber(subscribers)
+	}()
 
-	execute(publishers)
+	publishData := execute(publishers)
+	wg.Wait()
 
-	time.Sleep(time.Second * 10)
-	result := <-ch
+	var evaluateData []pubsubTimeStamp
+	evaluateStart := evaluateStartTime.Add(warmUp)
 
-	for key, val := range result {
-		fmt.Printf("key:%s, val:%s", key, val)
+	fmt.Printf("execute start time is: %s\n", evaluateStart)
+	testcount := 0
+	// 複数該当時に漏れが発生するために要注意
+	for _, pd := range publishData {
+		//subtime := pd.Sub(evaluateStartTime)
+		//fmt.Println(subtime)
+		finish := evaluateStart.Add(production)
+		if pd.Sub(evaluateStart) > 0 && pd.Sub(finish) < 0 {
+			//fmt.Printf("production, %s\n", pd)
+			for _, sd := range subscribeData {
+				if sd.published.Sub(pd) == 0 {
+					evaluateData = append(evaluateData, sd)
+					//fmt.Printf("counter:%d, これは成功です\n", testcount)
+					testcount++
+					break
+				}
+			}
+		} else {
+			//fmt.Printf("exiting, %s", pd)
+		}
 	}
+	f
+
+	fmt.Printf("first entry, publish:%s, subscribe:%s\n", evaluateData[0].published, evaluateData[0].subscribed)
+	fmt.Printf("last entry, publish:%s, subscribe:%s\n", evaluateData[len(evaluateData)-1].published, evaluateData[len(evaluateData)-1].subscribed)
 
 	disconnectALL(publishers)
 	disconnectALL(subscribers)
@@ -107,12 +148,11 @@ func lancher() {
 	flag.Parse()
 
 	qos = byte(*qosFlag)
-	retain = *retainFlag
 	topic = *topicFlag
 	size = *sizeFlag
 	load = *loadFlag
 	config = *configFlag
-
+	retain = *retainFlag
 	logger.Debug(fmt.Sprintf("qos: %d, retain: %t, topic: %s, size: %d, load: %f",
 		qos, retain, topic, size, load))
 
@@ -165,15 +205,14 @@ func disconnectALL(clinets []mqtt.Client) {
 	}
 }
 
-func setSubscriber(subscribers []mqtt.Client, tsStore chan map[time.Time]time.Time) {
-	var msgStore map[time.Time]time.Time
-	rVals := make([]*[]pubsubTimeStamp, len(subscribers))
+func setSubscriber(subscribers []mqtt.Client) []pubsubTimeStamp {
+	rStack := make([]*[]pubsubTimeStamp, len(subscribers))
 	for index := 0; index < len(subscribers); index++ {
 		id := index
 		s := subscribers[id]
 		topic := fmt.Sprintf("%05d", id)
 		rVal := []pubsubTimeStamp{}
-		rVals[id] = &rVal
+		rStack[id] = &rVal
 
 		var callback mqtt.MessageHandler = func(c mqtt.Client, msg mqtt.Message) {
 			var psts pubsubTimeStamp
@@ -193,20 +232,23 @@ func setSubscriber(subscribers []mqtt.Client, tsStore chan map[time.Time]time.Ti
 			fmt.Printf("Subscribe Error: %s\n", token.Error())
 		}
 	}
-	go func() {
-		time.Sleep(time.Second * 20)
-		for index := 0; index < len(subscribers); index++ {
-			rvs := *rVals[index]
-			fmt.Printf("len(rvs)=%d\n", len(rvs))
-			for _, r := range rvs {
-				fmt.Printf("topic:%s pub:%s, sub%s\n", r.topic, r.published, r.subscribed)
-			}
+
+	var rvals []pubsubTimeStamp
+	time.Sleep(time.Second * 20)
+	for index := 0; index < len(subscribers); index++ {
+		rs := *rStack[index]
+		fmt.Printf("len(rvs)=%d\n", len(rs))
+		for _, val := range rs {
+
+			rvals = append(rvals, val)
+
+			//fmt.Printf("topic:%s pub:%s, sub%s\n", val.topic, val.published, val.subscribed)
 		}
-		tsStore <- msgStore
-	}()
+	}
+	return rvals
 }
 
-func execute(publishers []mqtt.Client) {
+func execute(publishers []mqtt.Client) []time.Time {
 	//初期化
 	var allPublishedTimeStamp []time.Time
 
@@ -251,7 +293,7 @@ func execute(publishers []mqtt.Client) {
 					pts = append(pts, timeStamp)
 				}
 
-				if timeStamp.Sub(startTS) > time.Second*10 {
+				if timeStamp.Sub(startTS) > warmUp+production+coolDown {
 					break
 				}
 			}
@@ -259,7 +301,8 @@ func execute(publishers []mqtt.Client) {
 		}(index)
 	}
 
-	time.Sleep(time.Second * 3)
+	time.Sleep(time.Second * 5)
+	evaluateStartTime = time.Now()
 	redy.Done()
 
 	for index := 0; index < len(publishers); index++ {
@@ -275,6 +318,8 @@ func execute(publishers []mqtt.Client) {
 	millDuration := float64(total.Nanoseconds()) / math.Pow10(6)
 	th := float64(len(allPublishedTimeStamp)) / millDuration
 	fmt.Printf("thoughput: %fmsg/ms\n", th)
+
+	return allPublishedTimeStamp
 }
 
 func getMessage(strlen int) string {

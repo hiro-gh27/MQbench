@@ -38,9 +38,9 @@ var (
 var (
 	evaluateStartTime time.Time
 
-	warmUp     = time.Second * 5
-	production = time.Second * 5
-	coolDown   = time.Second * 5
+	warmUp     = time.Second * 1
+	production = time.Second * 1
+	coolDown   = time.Second * 1
 )
 
 const (
@@ -106,30 +106,81 @@ func main() {
 	wg.Wait()
 
 	var evaluateData []pubsubTimeStamp
-	evaluateStart := evaluateStartTime.Add(warmUp)
+	start := evaluateStartTime.Add(warmUp)
+	finish := start.Add(production)
+	debugCount := 0
+	pubCount := 0
 
-	fmt.Printf("execute start time is: %s\n", evaluateStart)
-	testcount := 0
+	fmt.Printf("execute start time is: %s\n", evaluateStartTime)
 	// 複数該当時に漏れが発生するために要注意
 	for _, pd := range publishData {
 		//subtime := pd.Sub(evaluateStartTime)
 		//fmt.Println(subtime)
-		finish := evaluateStart.Add(production)
-		if pd.Sub(evaluateStart) > 0 && pd.Sub(finish) < 0 {
+		if pd.Sub(start) > 0 && pd.Sub(finish) < 0 {
+			pubCount++
 			//fmt.Printf("production, %s\n", pd)
 			for _, sd := range subscribeData {
 				if sd.published.Sub(pd) == 0 {
 					evaluateData = append(evaluateData, sd)
-					//fmt.Printf("counter:%d, これは成功です\n", testcount)
-					testcount++
+					//fmt.Printf("counter:%d, これは成功です\n", debugCount)
+					debugCount++
 					break
+				} else {
+					//該当するsubscriberDataが存在しない時の処理を書く(=ロストレートの話)
 				}
 			}
 		} else {
+			//publishされた時間帯が評価外のために，切り捨てる．
 			//fmt.Printf("exiting, %s", pd)
 		}
 	}
-	f
+
+	/**
+	* 評価の計算式をここから
+	 **/
+	var ePubStamp []time.Time
+	var eSubStamp []time.Time
+	for _, ed := range evaluateData {
+		ePubStamp = append(ePubStamp, ed.published)
+		eSubStamp = append(eSubStamp, ed.subscribed)
+		fmt.Printf("pub:%s, sub:%s\n", ed.published, ed.subscribed)
+	}
+	sort.Sort(timeSort(ePubStamp))
+	sort.Sort(timeSort(eSubStamp))
+	// チャックするだけなので決してok
+	for _, ep := range ePubStamp {
+		fmt.Printf("sort pub:%s\n", ep)
+	}
+
+	var pTotalDuration time.Duration
+	var pMillsecondDuration float64
+	var pThroughput float64
+	pTotalDuration = ePubStamp[len(ePubStamp)-1].Sub(ePubStamp[0])
+	//	total := allPublishedTimeStamp[len(allPublishedTimeStamp)-1].Sub(allPublishedTimeStamp[0])
+	pMillsecondDuration = float64(pTotalDuration.Nanoseconds()) / math.Pow10(6)
+	//millDuration := float64(total.Nanoseconds()) / math.Pow10(6)
+	pThroughput = float64(len(ePubStamp)) / pMillsecondDuration
+	//th := float64(len(allPublishedTimeStamp)) / millDuration
+	fmt.Printf("pub thoughput: %fmsg/ms\n", pThroughput)
+
+	var sTotalDuration time.Duration
+	var sMillsecondDuration float64
+	var sThroughput float64
+	sTotalDuration = eSubStamp[len(eSubStamp)-1].Sub(eSubStamp[0])
+	//	total := allPublishedTimeStamp[len(allPublishedTimeStamp)-1].Sub(allPublishedTimeStamp[0])
+	sMillsecondDuration = float64(sTotalDuration.Nanoseconds()) / math.Pow10(6)
+	//millDuration := float64(total.Nanoseconds()) / math.Pow10(6)
+	sThroughput = float64(len(eSubStamp)) / sMillsecondDuration
+	//th := float64(len(allPublishedTimeStamp)) / millDuration
+	fmt.Printf("sub thoughput: %fmsg/ms\n", sThroughput)
+
+	lostNum := float64(pubCount - len(evaluateData))
+	fmt.Printf("lost num:%f\n", lostNum)
+	fmt.Printf("lost rate: %f%%\n", lostNum/float64(len(publishData))*100)
+
+	/**
+	 * ここまで
+	 */
 
 	fmt.Printf("first entry, publish:%s, subscribe:%s\n", evaluateData[0].published, evaluateData[0].subscribed)
 	fmt.Printf("last entry, publish:%s, subscribe:%s\n", evaluateData[len(evaluateData)-1].published, evaluateData[len(evaluateData)-1].subscribed)
@@ -234,7 +285,7 @@ func setSubscriber(subscribers []mqtt.Client) []pubsubTimeStamp {
 	}
 
 	var rvals []pubsubTimeStamp
-	time.Sleep(time.Second * 20)
+	time.Sleep(time.Second*5 + warmUp + production + coolDown)
 	for index := 0; index < len(subscribers); index++ {
 		rs := *rStack[index]
 		fmt.Printf("len(rvs)=%d\n", len(rs))

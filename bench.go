@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"math"
 	"math/rand"
 	"os"
@@ -38,9 +40,11 @@ var (
 var (
 	evaluateStartTime time.Time
 
-	warmUp     = time.Second * 1
+	warmUp     = time.Second * 20
 	production = time.Second * 60
-	coolDown   = time.Second * 1
+	coolDown   = time.Second * 10
+
+	exportFile string
 )
 
 const (
@@ -115,7 +119,8 @@ func main() {
 	}()
 
 	fmt.Println("実行待ち")
-	time.Sleep(5 * time.Second)
+	time.Sleep(20 * time.Second)
+	//time.Sleep(1 * time.Hour)
 	publishData := execute(publishers)
 	time.Sleep(5 * time.Second)
 	endLock.Done()
@@ -148,11 +153,13 @@ func main() {
 
 	totalCount := 0
 	elseCount := 0
+	var originPubData []time.Time
 
 	for outer := 0; outer < len(publishData); outer++ {
 		totalCount++
 		pd := publishData[outer]
 		if pd.Sub(start) > 0 && pd.Sub(finish) < 0 {
+			originPubData = append(originPubData, pd)
 			pubCount++
 			for inner := 0; inner < len(subscribeData); inner++ {
 				sd := subscribeData[inner]
@@ -170,6 +177,7 @@ func main() {
 					}
 					e := time.Now()
 					logger.Debug(fmt.Sprintf("start->midele:%s, middle->end:%s, evaluateData size:%d\n ", m.Sub(s), e.Sub(m), len(subscribeData)))
+					fmt.Printf("start->midele:%s, middle->end:%s, evaluateData size:%d\n ", m.Sub(s), e.Sub(m), len(subscribeData))
 				} else if pd.Sub(sd.published) < 0 {
 					break
 				}
@@ -180,18 +188,41 @@ func main() {
 	}
 	fmt.Printf("total:%d, pubCount:%d, elseCount:%d\n", totalCount, pubCount, elseCount)
 
-	/**
-	* 評価の計算式をここから
-	 */
+	/** 評価の計算式をここから **/
 	var ePubStamp []time.Time
 	var eSubStamp []time.Time
+	//var totalRTT []time.Duration
+	var totalDurarionNano int64
 	for _, ed := range evaluateData {
 		ePubStamp = append(ePubStamp, ed.published)
 		eSubStamp = append(eSubStamp, ed.subscribed)
+		rtt := ed.subscribed.Sub(ed.published).Nanoseconds()
+		//fmt.Printf("%s-%s=%dns\n", ed.subscribed, ed.published, rtt)
+		totalDurarionNano += rtt
 	}
-
+	fmt.Printf("tRttNanoDuration=%d\n", totalDurarionNano)
+	RTT := float64(totalDurarionNano / int64(len(evaluateData)))
+	mRTT := RTT / math.Pow10(6)
+	if RTT > math.Pow10(9) {
+		fmt.Printf("ave RTT:%fs\n", RTT/math.Pow10(9))
+	} else if RTT > math.Pow10(6) {
+		fmt.Printf("ave RTT:%fms\n", RTT/math.Pow10(6))
+	} else if RTT > math.Pow10(3) {
+		fmt.Printf("ave RTT:%fμs\n", RTT/math.Pow10(3))
+	} else {
+		fmt.Printf("ave RTT:%fns\n", RTT)
+	}
 	sort.Sort(timeSort(ePubStamp))
 	sort.Sort(timeSort(eSubStamp))
+
+	//各種取得データの統計
+	var opTotalDuration time.Duration
+	var opMillsecondDuration float64
+	var opTroughput float64
+	opTotalDuration = originPubData[len(originPubData)-1].Sub(originPubData[0])
+	opMillsecondDuration = float64(opTotalDuration.Nanoseconds()) / math.Pow10(6)
+	opTroughput = float64(len(originPubData)) / opMillsecondDuration
+	fmt.Printf("pub thoughput: %fmsg/ms\n", opTroughput)
 
 	var pTotalDuration time.Duration
 	var pMillsecondDuration float64
@@ -214,15 +245,52 @@ func main() {
 	fmt.Printf("sub thoughput: %fmsg/ms\n", sThroughput)
 
 	lostNum := float64(pubCount - len(evaluateData))
+	lostRatio := lostNum / float64(len(publishData)) * 100
 	fmt.Printf("total msgNum:%d, lost num:%f\n", pubCount, lostNum)
-	fmt.Printf("lost rate: %f%%\n", lostNum/float64(len(publishData))*100)
-	/** ここまで **/
+	fmt.Printf("lost rate: %f%%\n", lostRatio)
 
+	//性能限界には，評価ツールからのpublish[ms]と計測データからのsubscribe[msg/ms]を用いる
+	//ratio := (sThroughput / pThroughput) * 100
+	ratio := (sThroughput / opTroughput) * 100
+	fmt.Printf("new Definition1: %f%%\n", ratio)
+
+	/** ここまで **/
 	fmt.Printf("first entry, publish:%s, subscribe:%s\n", evaluateData[0].published, evaluateData[0].subscribed)
 	fmt.Printf("last entry, publish:%s, subscribe:%s\n", evaluateData[len(evaluateData)-1].published, evaluateData[len(evaluateData)-1].subscribed)
 
+	/**
+	* データ出力していきます
+	**/
+	filePath := fmt.Sprintf("/Users/hiroki/Downloads/%s.csv", exportFile)
+	fp, first := newFile(filePath)
+	writer := bufio.NewWriter(fp)
+
+	if first {
+		_, err := writer.WriteString(fmt.Sprintf("publish[msg/ms], ingress [msg/ms],egress [msg/ms],latecy [ms],total msg,lost msg,Definition [%%],lost rate [%%]\n"))
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+	expotData := fmt.Sprintf("%f,%f,%f,%f,%d,%d,%f,%f\n",
+		opTroughput, pThroughput, sThroughput, mRTT, pubCount, int(lostNum), ratio, lostRatio)
+	_, err = writer.WriteString(expotData)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	writer.Flush()
+	fp.Close()
+
 	disconnectALL(publishers)
 	disconnectALL(subscribers)
+}
+func newFile(fn string) (*os.File, bool) {
+	_, exist := os.Stat(fn)
+	fp, err := os.OpenFile(fn, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return fp, os.IsNotExist(exist)
 }
 
 func lancher() {
@@ -232,6 +300,7 @@ func lancher() {
 	sizeFlag := flag.Int("size", 100, "Message size per publish (byte)")
 	loadFlag := flag.Float64("load", 5, "publish/ms")
 	configFlag := flag.String("file", "NONE", "Base file name")
+	brokerName := flag.String("broker", "NONE", "export csv-file, piqt_singe_32.000.csv")
 	flag.Parse()
 
 	qos = byte(*qosFlag)
@@ -240,18 +309,29 @@ func lancher() {
 	load = *loadFlag
 	config = *configFlag
 	retain = *retainFlag
+	exportFile = fmt.Sprintf("%s_%f", *brokerName, load)
+	fmt.Printf("export file name is %s\n", exportFile)
+	//exportFile = *exportFileFlag
 	logger.Debug(fmt.Sprintf("qos: %d, retain: %t, topic: %s, size: %d, load: %f",
 		qos, retain, topic, size, load))
 
-	publishers = newConnectedClients("tcp://10.0.0.2:1883", 10)
-	subscribers = newConnectedClients("tcp://10.0.0.2:1883", 10)
-
+	publishers = newConnectedClients("p", "tcp://10.0.0.4:1883", 1)
+	publishers = append(publishers, newConnectedClients("p", "tcp://10.0.0.3:1883", 1)...)
+	subscribers = newConnectedClients("s", "tcp://10.0.0.2:1883", 2)
+	//subscribers = append(subscribers, newConnectedClients("s", "tcp://10.0.0.3:1883", 1)...)
+	//otherSub := newConnectedClients("tcp://10.0.0.3:1883", 1)
+	//subscribers = append(subscribers, otherSub...)
 }
 
-func newConnectedClients(broker string, number int) []mqtt.Client {
+func newConnectedClients(cType string, broker string, number int) []mqtt.Client {
 	var clients []mqtt.Client
 
 	for index := clientNum; index < clientNum+number; index++ {
+		if cType == "p" {
+			fmt.Printf("pub connect: %s\n", broker)
+		} else if cType == "s" {
+			fmt.Printf("sub connect: %s\n", broker)
+		}
 		id := index
 		prosessID := strconv.FormatInt(int64(os.Getpid()), 16)
 		clientID := fmt.Sprintf("%s-%d", prosessID, id)
@@ -297,7 +377,10 @@ func setSubscriber(subscribers []mqtt.Client, endLock *sync.WaitGroup) []pubsubT
 	for index := 0; index < len(subscribers); index++ {
 		id := index
 		s := subscribers[id]
+		//topic := fmt.Sprintf("%05d", 1)
+		//topic := fmt.Sprintf("%05d", id*2+1)
 		topic := fmt.Sprintf("%05d", id)
+		fmt.Printf("sub topic: %s\n", topic)
 		rVal := []pubsubTimeStamp{}
 		rStack[id] = &rVal
 
@@ -324,6 +407,7 @@ func setSubscriber(subscribers []mqtt.Client, endLock *sync.WaitGroup) []pubsubT
 	fmt.Println("wait start in setSubscribers")
 	endLock.Wait()
 	fmt.Println("wait end in setSubscribers")
+	time.Sleep(5 * time.Second)
 	//time.Sleep(time.Second*20 + warmUp + production + coolDown)
 	for index := 0; index < len(subscribers); index++ {
 		rs := *rStack[index]
@@ -350,11 +434,17 @@ func execute(publishers []mqtt.Client) []time.Time {
 
 	//goroutineでpublishを実行する
 	for index := 0; index < len(publishers); index++ {
+		//debugに使っただけなので決してよい 11/15 22:50
+		time.Sleep(time.Millisecond * 3000)
 		go func(index int) {
 			var timeStamp time.Time
 			var pts []time.Time
 			p := publishers[index]
 			topic := fmt.Sprintf("%05d", index)
+			//topic := fmt.Sprintf("%05d", index*2+1)
+			//topic := fmt.Sprintf("%05d", 1)
+			//topic := fmt.Sprintf("%05d", index+2)
+			fmt.Printf("publish topic%s\n", topic)
 			firstSleepDuration := getRandomInterval(maxInterval)
 			logger.Info(fmt.Sprintf("first: %s", firstSleepDuration))
 

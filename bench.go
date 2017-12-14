@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io/ioutil"
+	"log"
 	"math"
 	"math/rand"
 	"os"
@@ -38,9 +40,11 @@ var (
 var (
 	evaluateStartTime time.Time
 
-	warmUp     = time.Second * 1
-	production = time.Second * 1
-	coolDown   = time.Second * 1
+	warmUp     = time.Second * 20
+	production = time.Second * 60
+	coolDown   = time.Second * 10
+
+	exportFile string
 )
 
 const (
@@ -52,13 +56,15 @@ const (
 	stampMQTT     = "2006-01-02T15:04:05.000000000Z07:00"
 )
 
-type timeSort []time.Time
-
 type pubsubTimeStamp struct {
 	topic      string
 	published  time.Time
 	subscribed time.Time
 }
+
+// 構造体のソートを定義する
+type timeSort []time.Time
+type pubSort []pubsubTimeStamp
 
 func (x timeSort) Len() int { return len(x) }
 func (x timeSort) Less(i, j int) bool {
@@ -68,6 +74,15 @@ func (x timeSort) Less(i, j int) bool {
 	return dtime > 0
 }
 func (x timeSort) Swap(i, j int) { x[i], x[j] = x[j], x[i] }
+
+func (x pubSort) Len() int { return len(x) }
+func (x pubSort) Less(i, j int) bool {
+	itime := x[i].published
+	jtime := x[j].published
+	dtime := jtime.Sub(itime)
+	return dtime > 0
+}
+func (x pubSort) Swap(i, j int) { x[i], x[j] = x[j], x[i] }
 
 func main() {
 	fmt.Println("hello world")
@@ -95,98 +110,187 @@ func main() {
 	wg := sync.WaitGroup{}
 	wg.Add(1)
 
-	var subscribeData []pubsubTimeStamp
+	endLock := sync.WaitGroup{}
+	endLock.Add(1)
+	var badSubscribeData []pubsubTimeStamp
 	go func() {
 		defer wg.Done()
-		subscribeData = setSubscriber(subscribers)
-		//setSubscriber(subscribers)
+		badSubscribeData = setSubscriber(subscribers, &endLock)
 	}()
 
+	fmt.Println("実行待ち")
+	time.Sleep(20 * time.Second)
+	//time.Sleep(1 * time.Hour)
 	publishData := execute(publishers)
+	time.Sleep(5 * time.Second)
+	endLock.Done()
 	wg.Wait()
+	fmt.Println("実行終了")
 
 	var evaluateData []pubsubTimeStamp
 	start := evaluateStartTime.Add(warmUp)
 	finish := start.Add(production)
-	debugCount := 0
 	pubCount := 0
 
+	//setsubscriberからの入手データと比較を行って，該当部分の正しいデータを取得する．
+	var subscribeData []pubsubTimeStamp
+	fmt.Printf("check good subscribe data START, len(badSubscribeData)=%d\n", len(badSubscribeData))
+
+	//ここで範囲外の部分が切り捨てられている可能性があるためチェックしてる
+	//-> publish時刻でジャッジしていたために，特に悪い問題は起こしていないと思いわれ...
+	for _, bsd := range badSubscribeData {
+		if bsd.published.Sub(start) > 0 && bsd.published.Sub(finish) < 0 {
+			subscribeData = append(subscribeData, bsd)
+		}
+	}
+	fmt.Printf("check good subscribe data END, len(subscribeData)=%d\n", len(subscribeData))
+
+	//subscribeData = badSubscribeData
+
+	sort.Sort(pubSort(subscribeData))
 	fmt.Printf("execute start time is: %s\n", evaluateStartTime)
 	// 複数該当時に漏れが発生するために要注意
-	for _, pd := range publishData {
-		//subtime := pd.Sub(evaluateStartTime)
-		//fmt.Println(subtime)
+
+	totalCount := 0
+	elseCount := 0
+	var originPubData []time.Time
+
+	for outer := 0; outer < len(publishData); outer++ {
+		totalCount++
+		pd := publishData[outer]
 		if pd.Sub(start) > 0 && pd.Sub(finish) < 0 {
+			originPubData = append(originPubData, pd)
 			pubCount++
-			//fmt.Printf("production, %s\n", pd)
-			for _, sd := range subscribeData {
-				if sd.published.Sub(pd) == 0 {
+			for inner := 0; inner < len(subscribeData); inner++ {
+				sd := subscribeData[inner]
+
+				if pd.Sub(sd.published) > 0 {
+					continue
+				} else if pd.Sub(sd.published) == 0 {
+					s := time.Now()
 					evaluateData = append(evaluateData, sd)
-					//fmt.Printf("counter:%d, これは成功です\n", debugCount)
-					debugCount++
+					m := time.Now()
+					if inner > 0 {
+						subscribeData = append(subscribeData[:inner], subscribeData[inner+1:]...)
+					} else {
+						subscribeData = subscribeData[inner+1:]
+					}
+					e := time.Now()
+					logger.Debug(fmt.Sprintf("start->midele:%s, middle->end:%s, evaluateData size:%d\n ", m.Sub(s), e.Sub(m), len(subscribeData)))
+					fmt.Printf("start->midele:%s, middle->end:%s, evaluateData size:%d\n ", m.Sub(s), e.Sub(m), len(subscribeData))
+				} else if pd.Sub(sd.published) < 0 {
 					break
-				} else {
-					//該当するsubscriberDataが存在しない時の処理を書く(=ロストレートの話)
 				}
 			}
 		} else {
-			//publishされた時間帯が評価外のために，切り捨てる．
-			//fmt.Printf("exiting, %s", pd)
+			elseCount++
 		}
 	}
+	fmt.Printf("total:%d, pubCount:%d, elseCount:%d\n", totalCount, pubCount, elseCount)
 
-	/**
-	* 評価の計算式をここから
-	 **/
+	/** 評価の計算式をここから **/
 	var ePubStamp []time.Time
 	var eSubStamp []time.Time
+	//var totalRTT []time.Duration
+	var totalDurarionNano int64
 	for _, ed := range evaluateData {
 		ePubStamp = append(ePubStamp, ed.published)
 		eSubStamp = append(eSubStamp, ed.subscribed)
-		fmt.Printf("pub:%s, sub:%s\n", ed.published, ed.subscribed)
+		rtt := ed.subscribed.Sub(ed.published).Nanoseconds()
+		//fmt.Printf("%s-%s=%dns\n", ed.subscribed, ed.published, rtt)
+		totalDurarionNano += rtt
+	}
+	fmt.Printf("tRttNanoDuration=%d\n", totalDurarionNano)
+	RTT := float64(totalDurarionNano / int64(len(evaluateData)))
+	mRTT := RTT / math.Pow10(6)
+	if RTT > math.Pow10(9) {
+		fmt.Printf("ave RTT:%fs\n", RTT/math.Pow10(9))
+	} else if RTT > math.Pow10(6) {
+		fmt.Printf("ave RTT:%fms\n", RTT/math.Pow10(6))
+	} else if RTT > math.Pow10(3) {
+		fmt.Printf("ave RTT:%fμs\n", RTT/math.Pow10(3))
+	} else {
+		fmt.Printf("ave RTT:%fns\n", RTT)
 	}
 	sort.Sort(timeSort(ePubStamp))
 	sort.Sort(timeSort(eSubStamp))
-	// チャックするだけなので決してok
-	for _, ep := range ePubStamp {
-		fmt.Printf("sort pub:%s\n", ep)
-	}
+
+	//各種取得データの統計
+	var opTotalDuration time.Duration
+	var opMillsecondDuration float64
+	var opTroughput float64
+	opTotalDuration = originPubData[len(originPubData)-1].Sub(originPubData[0])
+	opMillsecondDuration = float64(opTotalDuration.Nanoseconds()) / math.Pow10(6)
+	opTroughput = float64(len(originPubData)) / opMillsecondDuration
+	fmt.Printf("pub thoughput: %fmsg/ms\n", opTroughput)
 
 	var pTotalDuration time.Duration
 	var pMillsecondDuration float64
 	var pThroughput float64
+	fmt.Printf("len(ePubStamps):%d\n", len(ePubStamp))
+	fmt.Printf("first:%s\n", ePubStamp[0])
+	fmt.Printf("last:%s\n", ePubStamp[len(ePubStamp)-1])
 	pTotalDuration = ePubStamp[len(ePubStamp)-1].Sub(ePubStamp[0])
-	//	total := allPublishedTimeStamp[len(allPublishedTimeStamp)-1].Sub(allPublishedTimeStamp[0])
 	pMillsecondDuration = float64(pTotalDuration.Nanoseconds()) / math.Pow10(6)
-	//millDuration := float64(total.Nanoseconds()) / math.Pow10(6)
 	pThroughput = float64(len(ePubStamp)) / pMillsecondDuration
-	//th := float64(len(allPublishedTimeStamp)) / millDuration
 	fmt.Printf("pub thoughput: %fmsg/ms\n", pThroughput)
 
 	var sTotalDuration time.Duration
 	var sMillsecondDuration float64
 	var sThroughput float64
+	fmt.Printf("len(eSubStamps):%d\n", len(eSubStamp))
 	sTotalDuration = eSubStamp[len(eSubStamp)-1].Sub(eSubStamp[0])
-	//	total := allPublishedTimeStamp[len(allPublishedTimeStamp)-1].Sub(allPublishedTimeStamp[0])
 	sMillsecondDuration = float64(sTotalDuration.Nanoseconds()) / math.Pow10(6)
-	//millDuration := float64(total.Nanoseconds()) / math.Pow10(6)
 	sThroughput = float64(len(eSubStamp)) / sMillsecondDuration
-	//th := float64(len(allPublishedTimeStamp)) / millDuration
 	fmt.Printf("sub thoughput: %fmsg/ms\n", sThroughput)
 
 	lostNum := float64(pubCount - len(evaluateData))
-	fmt.Printf("lost num:%f\n", lostNum)
-	fmt.Printf("lost rate: %f%%\n", lostNum/float64(len(publishData))*100)
+	lostRatio := lostNum / float64(len(publishData)) * 100
+	fmt.Printf("total msgNum:%d, lost num:%f\n", pubCount, lostNum)
+	fmt.Printf("lost rate: %f%%\n", lostRatio)
 
-	/**
-	 * ここまで
-	 */
+	//性能限界には，評価ツールからのpublish[ms]と計測データからのsubscribe[msg/ms]を用いる
+	//ratio := (sThroughput / pThroughput) * 100
+	ratio := (sThroughput / opTroughput) * 100
+	fmt.Printf("new Definition1: %f%%\n", ratio)
 
+	/** ここまで **/
 	fmt.Printf("first entry, publish:%s, subscribe:%s\n", evaluateData[0].published, evaluateData[0].subscribed)
 	fmt.Printf("last entry, publish:%s, subscribe:%s\n", evaluateData[len(evaluateData)-1].published, evaluateData[len(evaluateData)-1].subscribed)
 
+	/**
+	* データ出力していきます
+	**/
+	filePath := fmt.Sprintf("/Users/hiroki/Downloads/%s.csv", exportFile)
+	fp, first := newFile(filePath)
+	writer := bufio.NewWriter(fp)
+
+	if first {
+		_, err := writer.WriteString(fmt.Sprintf("publish[msg/ms], ingress [msg/ms],egress [msg/ms],latecy [ms],total msg,lost msg,Definition [%%],lost rate [%%]\n"))
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+	expotData := fmt.Sprintf("%f,%f,%f,%f,%d,%d,%f,%f\n",
+		opTroughput, pThroughput, sThroughput, mRTT, pubCount, int(lostNum), ratio, lostRatio)
+	_, err = writer.WriteString(expotData)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	writer.Flush()
+	fp.Close()
+
 	disconnectALL(publishers)
 	disconnectALL(subscribers)
+}
+func newFile(fn string) (*os.File, bool) {
+	_, exist := os.Stat(fn)
+	fp, err := os.OpenFile(fn, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
+	if err != nil {
+		log.Fatal(err)
+	}
+	return fp, os.IsNotExist(exist)
 }
 
 func lancher() {
@@ -196,6 +300,7 @@ func lancher() {
 	sizeFlag := flag.Int("size", 100, "Message size per publish (byte)")
 	loadFlag := flag.Float64("load", 5, "publish/ms")
 	configFlag := flag.String("file", "NONE", "Base file name")
+	brokerName := flag.String("broker", "NONE", "export csv-file, piqt_singe_32.000.csv")
 	flag.Parse()
 
 	qos = byte(*qosFlag)
@@ -204,18 +309,29 @@ func lancher() {
 	load = *loadFlag
 	config = *configFlag
 	retain = *retainFlag
+	exportFile = fmt.Sprintf("%s_%f", *brokerName, load)
+	fmt.Printf("export file name is %s\n", exportFile)
+	//exportFile = *exportFileFlag
 	logger.Debug(fmt.Sprintf("qos: %d, retain: %t, topic: %s, size: %d, load: %f",
 		qos, retain, topic, size, load))
 
-	publishers = newConnectedClients("tcp://127.0.0.1:1883", 10)
-	subscribers = newConnectedClients("tcp://127.0.0.1:1883", 10)
-
+	publishers = newConnectedClients("p", "tcp://10.0.0.4:1883", 1)
+	publishers = append(publishers, newConnectedClients("p", "tcp://10.0.0.3:1883", 1)...)
+	subscribers = newConnectedClients("s", "tcp://10.0.0.2:1883", 2)
+	//subscribers = append(subscribers, newConnectedClients("s", "tcp://10.0.0.3:1883", 1)...)
+	//otherSub := newConnectedClients("tcp://10.0.0.3:1883", 1)
+	//subscribers = append(subscribers, otherSub...)
 }
 
-func newConnectedClients(broker string, number int) []mqtt.Client {
+func newConnectedClients(cType string, broker string, number int) []mqtt.Client {
 	var clients []mqtt.Client
 
 	for index := clientNum; index < clientNum+number; index++ {
+		if cType == "p" {
+			fmt.Printf("pub connect: %s\n", broker)
+		} else if cType == "s" {
+			fmt.Printf("sub connect: %s\n", broker)
+		}
 		id := index
 		prosessID := strconv.FormatInt(int64(os.Getpid()), 16)
 		clientID := fmt.Sprintf("%s-%d", prosessID, id)
@@ -256,12 +372,15 @@ func disconnectALL(clinets []mqtt.Client) {
 	}
 }
 
-func setSubscriber(subscribers []mqtt.Client) []pubsubTimeStamp {
+func setSubscriber(subscribers []mqtt.Client, endLock *sync.WaitGroup) []pubsubTimeStamp {
 	rStack := make([]*[]pubsubTimeStamp, len(subscribers))
 	for index := 0; index < len(subscribers); index++ {
 		id := index
 		s := subscribers[id]
+		//topic := fmt.Sprintf("%05d", 1)
+		//topic := fmt.Sprintf("%05d", id*2+1)
 		topic := fmt.Sprintf("%05d", id)
+		fmt.Printf("sub topic: %s\n", topic)
 		rVal := []pubsubTimeStamp{}
 		rStack[id] = &rVal
 
@@ -285,7 +404,11 @@ func setSubscriber(subscribers []mqtt.Client) []pubsubTimeStamp {
 	}
 
 	var rvals []pubsubTimeStamp
-	time.Sleep(time.Second*5 + warmUp + production + coolDown)
+	fmt.Println("wait start in setSubscribers")
+	endLock.Wait()
+	fmt.Println("wait end in setSubscribers")
+	time.Sleep(5 * time.Second)
+	//time.Sleep(time.Second*20 + warmUp + production + coolDown)
 	for index := 0; index < len(subscribers); index++ {
 		rs := *rStack[index]
 		fmt.Printf("len(rvs)=%d\n", len(rs))
@@ -311,11 +434,17 @@ func execute(publishers []mqtt.Client) []time.Time {
 
 	//goroutineでpublishを実行する
 	for index := 0; index < len(publishers); index++ {
+		//debugに使っただけなので決してよい 11/15 22:50
+		time.Sleep(time.Millisecond * 3000)
 		go func(index int) {
 			var timeStamp time.Time
 			var pts []time.Time
 			p := publishers[index]
 			topic := fmt.Sprintf("%05d", index)
+			//topic := fmt.Sprintf("%05d", index*2+1)
+			//topic := fmt.Sprintf("%05d", 1)
+			//topic := fmt.Sprintf("%05d", index+2)
+			fmt.Printf("publish topic%s\n", topic)
 			firstSleepDuration := getRandomInterval(maxInterval)
 			logger.Info(fmt.Sprintf("first: %s", firstSleepDuration))
 
@@ -352,7 +481,7 @@ func execute(publishers []mqtt.Client) []time.Time {
 		}(index)
 	}
 
-	time.Sleep(time.Second * 5)
+	time.Sleep(time.Second * 10)
 	evaluateStartTime = time.Now()
 	redy.Done()
 
@@ -361,16 +490,22 @@ func execute(publishers []mqtt.Client) []time.Time {
 	}
 
 	sort.Sort(timeSort(allPublishedTimeStamp))
+
+	var rData []time.Time
+
 	fmt.Printf("len(allPublishedTimeStamp:%d\n", len(allPublishedTimeStamp))
 	for index := 0; index < len(allPublishedTimeStamp); index++ {
-		//fmt.Printf("index:%d, ts:%s\n", index, allPublishedTimeStamp[index])
+		str := allPublishedTimeStamp[index].Format(stampMQTT)
+		st, _ := time.Parse(stampMQTT, str)
+		rData = append(rData, st)
 	}
 	total := allPublishedTimeStamp[len(allPublishedTimeStamp)-1].Sub(allPublishedTimeStamp[0])
 	millDuration := float64(total.Nanoseconds()) / math.Pow10(6)
 	th := float64(len(allPublishedTimeStamp)) / millDuration
 	fmt.Printf("thoughput: %fmsg/ms\n", th)
 
-	return allPublishedTimeStamp
+	//return allPublishedTimeStamp
+	return rData
 }
 
 func getMessage(strlen int) string {

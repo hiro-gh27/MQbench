@@ -40,7 +40,7 @@ var (
 var (
 	evaluateStartTime time.Time
 
-	warmUp     = time.Second * 20
+	warmUp     = time.Second * 10
 	production = time.Second * 60
 	coolDown   = time.Second * 10
 
@@ -56,10 +56,24 @@ const (
 	stampMQTT     = "2006-01-02T15:04:05.000000000Z07:00"
 )
 
+type broker struct {
+	Type   string `json:"type"`
+	Host   string `json:"host"`
+	PeerID string `json:"peerID"`
+	Num    int    `json:"number"`
+}
+
 type pubsubTimeStamp struct {
 	topic      string
 	published  time.Time
 	subscribed time.Time
+}
+
+// evaData is formatted data
+type evaData struct {
+	publishData []time.Time
+	ingressData []time.Time
+	egressData  []time.Time
 }
 
 // 構造体のソートを定義する
@@ -127,10 +141,9 @@ func main() {
 	wg.Wait()
 	fmt.Println("実行終了")
 
-	var evaluateData []pubsubTimeStamp
+	//var evaluateData []pubsubTimeStamp
 	start := evaluateStartTime.Add(warmUp)
 	finish := start.Add(production)
-	pubCount := 0
 
 	//setsubscriberからの入手データと比較を行って，該当部分の正しいデータを取得する．
 	var subscribeData []pubsubTimeStamp
@@ -149,57 +162,22 @@ func main() {
 
 	sort.Sort(pubSort(subscribeData))
 	fmt.Printf("execute start time is: %s\n", evaluateStartTime)
-	// 複数該当時に漏れが発生するために要注意
-
-	totalCount := 0
-	elseCount := 0
-	var originPubData []time.Time
-
-	for outer := 0; outer < len(publishData); outer++ {
-		totalCount++
-		pd := publishData[outer]
-		if pd.Sub(start) > 0 && pd.Sub(finish) < 0 {
-			originPubData = append(originPubData, pd)
-			pubCount++
-			for inner := 0; inner < len(subscribeData); inner++ {
-				sd := subscribeData[inner]
-
-				if pd.Sub(sd.published) > 0 {
-					continue
-				} else if pd.Sub(sd.published) == 0 {
-					s := time.Now()
-					evaluateData = append(evaluateData, sd)
-					m := time.Now()
-					if inner > 0 {
-						subscribeData = append(subscribeData[:inner], subscribeData[inner+1:]...)
-					} else {
-						subscribeData = subscribeData[inner+1:]
-					}
-					e := time.Now()
-					logger.Debug(fmt.Sprintf("start->midele:%s, middle->end:%s, evaluateData size:%d\n ", m.Sub(s), e.Sub(m), len(subscribeData)))
-					fmt.Printf("start->midele:%s, middle->end:%s, evaluateData size:%d\n ", m.Sub(s), e.Sub(m), len(subscribeData))
-				} else if pd.Sub(sd.published) < 0 {
-					break
-				}
-			}
-		} else {
-			elseCount++
-		}
-	}
-	fmt.Printf("total:%d, pubCount:%d, elseCount:%d\n", totalCount, pubCount, elseCount)
 
 	/** 評価の計算式をここから **/
-	var ePubStamp []time.Time
-	var eSubStamp []time.Time
-	//var totalRTT []time.Duration
-	var totalDurarionNano int64
-	for _, ed := range evaluateData {
-		ePubStamp = append(ePubStamp, ed.published)
-		eSubStamp = append(eSubStamp, ed.subscribed)
-		rtt := ed.subscribed.Sub(ed.published).Nanoseconds()
-		//fmt.Printf("%s-%s=%dns\n", ed.subscribed, ed.published, rtt)
-		totalDurarionNano += rtt
+	data := eliminate(publishData, subscribeData)
+
+	evaluateData := make([]pubsubTimeStamp, len(data.ingressData))
+	originPubData := data.publishData
+	ePubStamp := data.ingressData
+	eSubStamp := data.egressData
+	pubCount := len(originPubData)
+	totalDurarionNano := int64(0)
+	for index := 0; index < len(ePubStamp); index++ {
+		evaluateData[index].published = ePubStamp[index]
+		evaluateData[index].subscribed = eSubStamp[index]
+		totalDurarionNano += eSubStamp[index].Sub(ePubStamp[index]).Nanoseconds()
 	}
+
 	fmt.Printf("tRttNanoDuration=%d\n", totalDurarionNano)
 	RTT := float64(totalDurarionNano / int64(len(evaluateData)))
 	mRTT := RTT / math.Pow10(6)
@@ -300,7 +278,8 @@ func lancher() {
 	sizeFlag := flag.Int("size", 100, "Message size per publish (byte)")
 	loadFlag := flag.Float64("load", 5, "publish/ms")
 	configFlag := flag.String("file", "NONE", "Base file name")
-	brokerName := flag.String("broker", "NONE", "export csv-file, piqt_singe_32.000.csv")
+	brokersFlag := flag.String("broker", "NONE", "json")
+
 	flag.Parse()
 
 	qos = byte(*qosFlag)
@@ -309,15 +288,36 @@ func lancher() {
 	load = *loadFlag
 	config = *configFlag
 	retain = *retainFlag
-	exportFile = fmt.Sprintf("%s_%f", *brokerName, load)
+	b := *brokersFlag
+	exportFile = fmt.Sprintf("%s[load=%f]", b[:len(b)-5], load)
 	fmt.Printf("export file name is %s\n", exportFile)
 	//exportFile = *exportFileFlag
 	logger.Debug(fmt.Sprintf("qos: %d, retain: %t, topic: %s, size: %d, load: %f",
 		qos, retain, topic, size, load))
 
-	publishers = newConnectedClients("p", "tcp://10.0.0.4:1883", 1)
-	publishers = append(publishers, newConnectedClients("p", "tcp://10.0.0.3:1883", 1)...)
-	subscribers = newConnectedClients("s", "tcp://10.0.0.2:1883", 2)
+	//brokerに接続するところをjsonで読み込む 2018/02/07
+	brokersJSON := fmt.Sprintf("./exp/%s", *brokersFlag)
+	byteS, err := ioutil.ReadFile(brokersJSON)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var brokers []broker
+	if err := json.Unmarshal(byteS, &brokers); err != nil {
+		log.Fatal(err)
+	}
+	for _, b := range brokers {
+		c := newConnectedClients(b.Type, b.Host, b.Num)
+		if b.Type == "pub" {
+			publishers = append(publishers, c...)
+		} else {
+			subscribers = append(subscribers, c...)
+		}
+	}
+	/*
+		publishers = newConnectedClients("p", "tcp://10.0.0.2:1883", 200)
+		subscribers = newConnectedClients("s", "tcp://10.0.0.3:1883", 100)
+		subscribers = append(subscribers, newConnectedClients("s", "tcp://10.0.0.4:1883", 100)...)
+	*/
 	//subscribers = append(subscribers, newConnectedClients("s", "tcp://10.0.0.3:1883", 1)...)
 	//otherSub := newConnectedClients("tcp://10.0.0.3:1883", 1)
 	//subscribers = append(subscribers, otherSub...)
@@ -327,9 +327,9 @@ func newConnectedClients(cType string, broker string, number int) []mqtt.Client 
 	var clients []mqtt.Client
 
 	for index := clientNum; index < clientNum+number; index++ {
-		if cType == "p" {
+		if cType == "pub" {
 			fmt.Printf("pub connect: %s\n", broker)
-		} else if cType == "s" {
+		} else if cType == "sub" {
 			fmt.Printf("sub connect: %s\n", broker)
 		}
 		id := index
@@ -380,6 +380,8 @@ func setSubscriber(subscribers []mqtt.Client, endLock *sync.WaitGroup) []pubsubT
 		//topic := fmt.Sprintf("%05d", 1)
 		//topic := fmt.Sprintf("%05d", id*2+1)
 		topic := fmt.Sprintf("%05d", id)
+		// add for test 12/25
+		topic = fmt.Sprintf("%05d", 0)
 		fmt.Printf("sub topic: %s\n", topic)
 		rVal := []pubsubTimeStamp{}
 		rStack[id] = &rVal
@@ -435,14 +437,14 @@ func execute(publishers []mqtt.Client) []time.Time {
 	//goroutineでpublishを実行する
 	for index := 0; index < len(publishers); index++ {
 		//debugに使っただけなので決してよい 11/15 22:50
-		time.Sleep(time.Millisecond * 3000)
+		time.Sleep(time.Millisecond * 30)
 		go func(index int) {
 			var timeStamp time.Time
 			var pts []time.Time
 			p := publishers[index]
 			topic := fmt.Sprintf("%05d", index)
 			//topic := fmt.Sprintf("%05d", index*2+1)
-			//topic := fmt.Sprintf("%05d", 1)
+			//topic = fmt.Sprintf("%05d", 0)
 			//topic := fmt.Sprintf("%05d", index+2)
 			fmt.Printf("publish topic%s\n", topic)
 			firstSleepDuration := getRandomInterval(maxInterval)
@@ -538,4 +540,35 @@ func getRandomInterval(max float64) time.Duration {
 		td = time.Duration(interval) * time.Nanosecond
 	}
 	return td
+}
+
+func eliminate(filter []time.Time, data []pubsubTimeStamp) evaData {
+	var publish, ingress, egress []time.Time
+	sort.Sort(pubSort(data))
+	sort.Sort(timeSort(filter))
+
+	in := 0
+	start := evaluateStartTime.Add(warmUp)
+	end := start.Add(production)
+	for out := 0; out < len(filter); out++ {
+		f := filter[out]
+		if f.Sub(start) > 0 && f.Sub(end) < 0 {
+			publish = append(publish, f)
+			for in < len(data) {
+				d := data[in]
+				diration := d.published.Sub(f)
+				if diration < 0 {
+					in++
+				} else if diration == 0 {
+					ingress = append(ingress, d.published)
+					egress = append(egress, d.subscribed)
+					in++
+				} else {
+					break
+				}
+			}
+		}
+	}
+	res := evaData{publishData: publish, ingressData: ingress, egressData: egress}
+	return res
 }

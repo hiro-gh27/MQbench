@@ -40,9 +40,9 @@ var (
 var (
 	evaluateStartTime time.Time
 
-	warmUp     = time.Second * 5
-	production = time.Second * 5
-	coolDown   = time.Second * 5
+	warmUp     = time.Second * 10
+	production = time.Second * 60
+	coolDown   = time.Second * 10
 
 	exportFile string
 )
@@ -55,6 +55,13 @@ const (
 	tsLayout      = time.StampNano + " 2006"
 	stampMQTT     = "2006-01-02T15:04:05.000000000Z07:00"
 )
+
+type broker struct {
+	Type   string `json:"type"`
+	Host   string `json:"host"`
+	PeerID string `json:"peerID"`
+	Num    int    `json:"number"`
+}
 
 type pubsubTimeStamp struct {
 	topic      string
@@ -271,7 +278,8 @@ func lancher() {
 	sizeFlag := flag.Int("size", 100, "Message size per publish (byte)")
 	loadFlag := flag.Float64("load", 5, "publish/ms")
 	configFlag := flag.String("file", "NONE", "Base file name")
-	brokerName := flag.String("broker", "NONE", "export csv-file, piqt_singe_32.000.csv")
+	brokersFlag := flag.String("broker", "NONE", "json")
+
 	flag.Parse()
 
 	qos = byte(*qosFlag)
@@ -280,21 +288,36 @@ func lancher() {
 	load = *loadFlag
 	config = *configFlag
 	retain = *retainFlag
-	exportFile = fmt.Sprintf("%s_%f", *brokerName, load)
+	b := *brokersFlag
+	exportFile = fmt.Sprintf("%s[load=%f]", b[:len(b)-5], load)
 	fmt.Printf("export file name is %s\n", exportFile)
 	//exportFile = *exportFileFlag
 	logger.Debug(fmt.Sprintf("qos: %d, retain: %t, topic: %s, size: %d, load: %f",
 		qos, retain, topic, size, load))
 
+	//brokerに接続するところをjsonで読み込む 2018/02/07
+	brokersJSON := fmt.Sprintf("./exp/%s", *brokersFlag)
+	byteS, err := ioutil.ReadFile(brokersJSON)
+	if err != nil {
+		log.Fatal(err)
+	}
+	var brokers []broker
+	if err := json.Unmarshal(byteS, &brokers); err != nil {
+		log.Fatal(err)
+	}
+	for _, b := range brokers {
+		c := newConnectedClients(b.Type, b.Host, b.Num)
+		if b.Type == "pub" {
+			publishers = append(publishers, c...)
+		} else {
+			subscribers = append(subscribers, c...)
+		}
+	}
 	/*
-		publishers = newConnectedClients("p", "tcp://10.0.0.4:1883", 1)
-		publishers = append(publishers, newConnectedClients("p", "tcp://10.0.0.3:1883", 1)...)
-		subscribers = newConnectedClients("s", "tcp://10.0.0.2:1883", 2)
+		publishers = newConnectedClients("p", "tcp://10.0.0.2:1883", 200)
+		subscribers = newConnectedClients("s", "tcp://10.0.0.3:1883", 100)
+		subscribers = append(subscribers, newConnectedClients("s", "tcp://10.0.0.4:1883", 100)...)
 	*/
-
-	publishers = newConnectedClients("p", "tcp://10.0.0.2:1883", 1)
-	subscribers = newConnectedClients("s", "tcp://10.0.0.2:1883", 1)
-
 	//subscribers = append(subscribers, newConnectedClients("s", "tcp://10.0.0.3:1883", 1)...)
 	//otherSub := newConnectedClients("tcp://10.0.0.3:1883", 1)
 	//subscribers = append(subscribers, otherSub...)
@@ -304,9 +327,9 @@ func newConnectedClients(cType string, broker string, number int) []mqtt.Client 
 	var clients []mqtt.Client
 
 	for index := clientNum; index < clientNum+number; index++ {
-		if cType == "p" {
+		if cType == "pub" {
 			fmt.Printf("pub connect: %s\n", broker)
-		} else if cType == "s" {
+		} else if cType == "sub" {
 			fmt.Printf("sub connect: %s\n", broker)
 		}
 		id := index
@@ -357,6 +380,8 @@ func setSubscriber(subscribers []mqtt.Client, endLock *sync.WaitGroup) []pubsubT
 		//topic := fmt.Sprintf("%05d", 1)
 		//topic := fmt.Sprintf("%05d", id*2+1)
 		topic := fmt.Sprintf("%05d", id)
+		// add for test 12/25
+		topic = fmt.Sprintf("%05d", 0)
 		fmt.Printf("sub topic: %s\n", topic)
 		rVal := []pubsubTimeStamp{}
 		rStack[id] = &rVal
@@ -412,14 +437,14 @@ func execute(publishers []mqtt.Client) []time.Time {
 	//goroutineでpublishを実行する
 	for index := 0; index < len(publishers); index++ {
 		//debugに使っただけなので決してよい 11/15 22:50
-		time.Sleep(time.Millisecond * 3000)
+		time.Sleep(time.Millisecond * 30)
 		go func(index int) {
 			var timeStamp time.Time
 			var pts []time.Time
 			p := publishers[index]
 			topic := fmt.Sprintf("%05d", index)
 			//topic := fmt.Sprintf("%05d", index*2+1)
-			//topic := fmt.Sprintf("%05d", 1)
+			//topic = fmt.Sprintf("%05d", 0)
 			//topic := fmt.Sprintf("%05d", index+2)
 			fmt.Printf("publish topic%s\n", topic)
 			firstSleepDuration := getRandomInterval(maxInterval)

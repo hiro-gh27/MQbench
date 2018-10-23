@@ -41,7 +41,7 @@ var (
 	evaluateStartTime time.Time
 
 	warmUp     = time.Second * 10
-	production = time.Second * 60
+	production = time.Second * 600
 	coolDown   = time.Second * 10
 
 	exportFile string
@@ -313,14 +313,6 @@ func lancher() {
 			subscribers = append(subscribers, c...)
 		}
 	}
-	/*
-		publishers = newConnectedClients("p", "tcp://10.0.0.2:1883", 200)
-		subscribers = newConnectedClients("s", "tcp://10.0.0.3:1883", 100)
-		subscribers = append(subscribers, newConnectedClients("s", "tcp://10.0.0.4:1883", 100)...)
-	*/
-	//subscribers = append(subscribers, newConnectedClients("s", "tcp://10.0.0.3:1883", 1)...)
-	//otherSub := newConnectedClients("tcp://10.0.0.3:1883", 1)
-	//subscribers = append(subscribers, otherSub...)
 }
 
 func newConnectedClients(cType string, broker string, number int) []mqtt.Client {
@@ -381,7 +373,7 @@ func setSubscriber(subscribers []mqtt.Client, endLock *sync.WaitGroup) []pubsubT
 		//topic := fmt.Sprintf("%05d", id*2+1)
 		topic := fmt.Sprintf("%05d", id)
 		// add for test 12/25
-		topic = fmt.Sprintf("%05d", 0)
+		//topic = fmt.Sprintf("%05d", 0)
 		fmt.Printf("sub topic: %s\n", topic)
 		rVal := []pubsubTimeStamp{}
 		rStack[id] = &rVal

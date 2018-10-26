@@ -426,7 +426,6 @@ func execute(publishers []mqtt.Client) []time.Time {
 	redy := sync.WaitGroup{}
 	redy.Add(1)
 
-	//goroutineでpublishを実行する
 	for index := 0; index < len(publishers); index++ {
 		//debugに使っただけなので決してよい 11/15 22:50
 		time.Sleep(time.Millisecond * 30)
@@ -435,9 +434,6 @@ func execute(publishers []mqtt.Client) []time.Time {
 			var pts []time.Time
 			p := publishers[index]
 			topic := fmt.Sprintf("%05d", index)
-			//topic := fmt.Sprintf("%05d", index*2+1)
-			//topic = fmt.Sprintf("%05d", 0)
-			//topic := fmt.Sprintf("%05d", index+2)
 			fmt.Printf("publish topic%s\n", topic)
 			firstSleepDuration := getRandomInterval(maxInterval)
 			logger.Info(fmt.Sprintf("first: %s", firstSleepDuration))

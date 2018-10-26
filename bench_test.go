@@ -54,12 +54,14 @@ func after() {
 func createTestClientsToLocalBroker(pNum int, sNum int) {
 	testPublishers = newConnectedClients("p", "tcp://127.0.0.1:1883", pNum)
 	testSubscribers = newConnectedClients("s", "tcp://127.0.0.1:1883", sNum)
+	time.Sleep(3 * time.Second)
 }
 
 //ipアドレスをあとでちゃんと埋める．
 func createTestClientsToRemoteBroker(pNum int, sNum int) {
 	testPublishers = newConnectedClients("p", "tcp://", pNum)
 	testSubscribers = newConnectedClients("s", "tcp://", sNum)
+	time.Sleep(3 * time.Second)
 }
 
 //まだ実装途中で止まっている．

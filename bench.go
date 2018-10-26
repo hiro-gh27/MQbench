@@ -369,15 +369,10 @@ func setSubscriber(subscribers []mqtt.Client, endLock *sync.WaitGroup) []pubsubT
 	for index := 0; index < len(subscribers); index++ {
 		id := index
 		s := subscribers[id]
-		//topic := fmt.Sprintf("%05d", 1)
-		//topic := fmt.Sprintf("%05d", id*2+1)
 		topic := fmt.Sprintf("%05d", id)
-		// add for test 12/25
-		//topic = fmt.Sprintf("%05d", 0)
-		fmt.Printf("sub topic: %s\n", topic)
 		rVal := []pubsubTimeStamp{}
 		rStack[id] = &rVal
-
+		fmt.Printf("sub topic: %s\n", topic)
 		var callback mqtt.MessageHandler = func(c mqtt.Client, msg mqtt.Message) {
 			var psts pubsubTimeStamp
 			sst := time.Now().Format(stampMQTT)
@@ -402,15 +397,11 @@ func setSubscriber(subscribers []mqtt.Client, endLock *sync.WaitGroup) []pubsubT
 	endLock.Wait()
 	fmt.Println("wait end in setSubscribers")
 	time.Sleep(5 * time.Second)
-	//time.Sleep(time.Second*20 + warmUp + production + coolDown)
 	for index := 0; index < len(subscribers); index++ {
 		rs := *rStack[index]
 		fmt.Printf("len(rvs)=%d\n", len(rs))
 		for _, val := range rs {
-
 			rvals = append(rvals, val)
-
-			//fmt.Printf("topic:%s pub:%s, sub%s\n", val.topic, val.published, val.subscribed)
 		}
 	}
 	return rvals

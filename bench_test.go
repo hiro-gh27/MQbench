@@ -3,10 +3,19 @@ package main
 import (
 	"encoding/json"
 	"io/ioutil"
+	"os"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/eclipse/paho.mqtt.golang"
+
 	"go.uber.org/zap"
+)
+
+var (
+	testPublishers  []mqtt.Client
+	testSubscribers []mqtt.Client
 )
 
 func initLogger() {
@@ -22,28 +31,61 @@ func initLogger() {
 	defer logger.Sync()
 }
 
-/*
-func TestSingleData(t *testing.T) {
-	var pubData []time.Time
-	pubData = append(pubData, time.Now())
+func TestMain(m *testing.M) {
+	before()
+	code := m.Run()
+	after()
+	os.Exit(code)
+}
 
-	var data []pubsubTimeStamp
-	ps := pubsubTimeStamp{}
-	ps.topic = "hoge"
-	ps.published = pubData[0]
-	ps.subscribed = time.Now()
-	data = append(data, ps)
+func before() {
+	initLogger()
+}
 
-	res := eliminate(pubData, data)
-
-	expected := 1
-	actual := len(res)
-
-	if expected == actual {
-		t.Fatalf("miss expected:%d, actual%d", expected, actual)
+func after() {
+	if len(testPublishers) != 0 {
+		disconnectALL(testPublishers)
+	}
+	if len(testSubscribers) != 0 {
+		disconnectALL(testSubscribers)
 	}
 }
-*/
+
+func createTestClientsToLocalBroker(pNum int, sNum int) {
+	testPublishers = newConnectedClients("p", "tcp://127.0.0.1:1883", pNum)
+	testSubscribers = newConnectedClients("s", "tcp://127.0.0.1:1883", sNum)
+	time.Sleep(3 * time.Second)
+}
+
+//ipアドレスをあとでちゃんと埋める．
+func createTestClientsToRemoteBroker(pNum int, sNum int) {
+	testPublishers = newConnectedClients("p", "tcp://", pNum)
+	testSubscribers = newConnectedClients("s", "tcp://", sNum)
+	time.Sleep(3 * time.Second)
+}
+
+//まだ実装途中で止まっている．
+func TestSinglePubSub(t *testing.T) {
+	createTestClientsToLocalBroker(1, 1)
+	terminateSubSync := sync.WaitGroup{}
+	terminateSubSync.Add(1)
+	setSubscriber(testSubscribers, &terminateSubSync)
+}
+
+func TestSinglePublishForTimestamp(t *testing.T) {
+	createTestClientsToLocalBroker(1, 0)
+	topic := "hoge"
+	qos := (byte)(0)
+	retain := false
+	msg := ""
+	publishedTimestamp := time.Now()
+	msgPadding := getMessage(1024 - len(stampMQTT) - 1)
+	msg = publishedTimestamp.Format(stampMQTT) + "/" + msgPadding
+	pubToken := testPublishers[0].Publish(topic, qos, retain, msg)
+	if pubToken.Wait() && pubToken.Error() != nil {
+		t.Errorf("can't published")
+	}
+}
 
 func TestMultiData(t *testing.T) {
 	expected := 10

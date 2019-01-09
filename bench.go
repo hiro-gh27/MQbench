@@ -40,9 +40,9 @@ var (
 var (
     evaluateStartTime time.Time
 
-    warmUp     = time.Second * 5
-    production = time.Second * 20
-    coolDown   = time.Second * 5
+    warmUp     = time.Second * 10
+    production = time.Second * 60
+    coolDown   = time.Second * 10
 
     exportFile string
 )
@@ -120,7 +120,7 @@ func main() {
     /*
         ここから実行メソッド
     */
-    lancher()
+    launcher()
     wg := sync.WaitGroup{}
     wg.Add(1)
 
@@ -271,13 +271,13 @@ func newFile(fn string) (*os.File, bool) {
     return fp, os.IsNotExist(exist)
 }
 
-func lancher() {
+func launcher() {
     qosFlag := flag.Int("qos", 0, "MQTT QoS(0|1|2)")
     retainFlag := flag.Bool("retain", false, "MQTT Retain")
     topicFlag := flag.String("topic", "", "Base topic")
     sizeFlag := flag.Int("size", 1000, "Message size per publish (byte)")
     loadFlag := flag.Float64("load", 5, "publish/ms")
-    configFlag := flag.String("file", "NONE", "Base file name")
+    loggingFileFlag := flag.String("logging file", "NONE", "Base file name")
     brokersFlag := flag.String("broker", "NONE", "json")
 
     flag.Parse()
@@ -286,7 +286,7 @@ func lancher() {
     topic = *topicFlag
     size = *sizeFlag
     load = *loadFlag
-    config = *configFlag
+    config = *loggingFileFlag
     retain = *retainFlag
     b := *brokersFlag
     exportFile = fmt.Sprintf("%s[load=%f]", b[:len(b)-5], load)

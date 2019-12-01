@@ -1,0 +1,30 @@
+@startuml
+object main{
+    name = "hoge"
+}
+
+object GlobalConfig{
+
+}
+
+object MQTTClientFactory{
+
+}
+
+object PublisherGroup{
+
+}
+
+object Publisher{
+
+}
+
+object SubscribeGroup{
+
+}
+
+object Subscribe{
+
+}
+
+@enduml

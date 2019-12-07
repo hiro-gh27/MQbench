@@ -3,6 +3,7 @@ package pubsub
 import (
 	"fmt"
 	mqtt "github.com/eclipse/paho.mqtt.golang"
+	"go.uber.org/zap"
 	"os"
 	"strconv"
 	"time"
@@ -22,15 +23,17 @@ func NewClientFactory() *clientFactory {
 func (cf *clientFactory) GetConnected(cType string, broker string, number int) []mqtt.Client {
 	var clients []mqtt.Client
 
+	//logger, _ := zap.NewDevelopment()
+	//logger := zap.L()
 	for index := cf.counter; index < cf.counter+number; index++ {
 		if cType == "pub" {
-			fmt.Printf("pub connect: %s\n", broker)
+			logger.Debug("publisher connect to", zap.String("broker", broker))
 		} else if cType == "sub" {
-			fmt.Printf("sub connect: %s\n", broker)
+			logger.Debug("subscriber connect to", zap.String("broker", broker))
 		}
 		id := index
-		prosessID := strconv.FormatInt(int64(os.Getpid()), 16)
-		clientID := fmt.Sprintf("%s-%d", prosessID, id)
+		processID := strconv.FormatInt(int64(os.Getpid()), 16)
+		clientID := fmt.Sprintf("%s-%d", processID, id)
 		//logger.Debug(fmt.Sprintf("broker: %s, clientID %s", broker, clientID))
 
 		opts := mqtt.NewClientOptions()
@@ -41,7 +44,7 @@ func (cf *clientFactory) GetConnected(cType string, broker string, number int) [
 
 		token := client.Connect()
 		if token.Wait() && token.Error() != nil {
-			fmt.Printf("Connected error: %s\n", token.Error())
+			logger.Error("Connected error:", zap.Error(token.Error()))
 			client = nil
 		}
 		clients = append(clients, client)

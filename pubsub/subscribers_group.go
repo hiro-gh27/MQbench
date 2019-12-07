@@ -3,6 +3,7 @@ package pubsub
 import (
 	"fmt"
 	"github.com/eclipse/paho.mqtt.golang"
+	"go.uber.org/zap"
 	"sync"
 	"time"
 )
@@ -45,7 +46,7 @@ func (sb *SubscribersGroup) ExecuteAsync(endLock *sync.WaitGroup) chan []PubSubT
 			var rVal []PubSubTimeStamp
 			rStack[id] = &rVal
 
-			fmt.Printf("sub topic: %s\n", topic)
+			logger.Debug("subscribing", zap.String("topic", topic))
 
 			var callback mqtt.MessageHandler = func(c mqtt.Client, msg mqtt.Message) {
 				var psts PubSubTimeStamp
@@ -61,7 +62,7 @@ func (sb *SubscribersGroup) ExecuteAsync(endLock *sync.WaitGroup) chan []PubSubT
 				psts.Subscribed = st
 
 				rVal = append(rVal, psts)
-				//logger.Debug(fmt.Sprintf("topic:%s pub:%s, sub%s\n", psts.topic, psts.published, psts.subscribed))
+				logger.Debug("subscribed message", zap.String("topic", topic), zap.Time("published", pt), zap.Time("subscribed", st))
 			}
 
 			token := s.Subscribe(topic, sb.configurations.Qos, callback)

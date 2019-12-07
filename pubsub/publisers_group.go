@@ -7,8 +7,6 @@ import (
 	"math/rand"
 	"sync"
 	"time"
-
-	log "github.com/sirupsen/logrus"
 )
 
 const (
@@ -47,9 +45,10 @@ func (ps *PublishersGroup) Execute(publishers []mqtt.Client, duration time.Durat
 			var pts []time.Time
 			p := publishers[index]
 			topic := fmt.Sprintf("%05d", index)
+
 			fmt.Printf("publish topic%s\n", topic)
 			firstSleepDuration := randomInterval(maxInterval)
-			log.Info(fmt.Sprintf("first: %s", firstSleepDuration))
+			logger.Info(fmt.Sprintf("first: %s", firstSleepDuration))
 
 			redy.Wait()
 			startTS := time.Now()
@@ -59,14 +58,14 @@ func (ps *PublishersGroup) Execute(publishers []mqtt.Client, duration time.Durat
 					gap := time.Now().Sub(startTS)
 					ideal := time.Duration(maxInterval * 1000 * 1000 * float64(count))
 					wait := ideal - gap
-					log.Debug(fmt.Sprintf("gap=%s, ideal=%s\n", gap, ideal))
+					logger.Debug(fmt.Sprintf("gap=%s, ideal=%s\n", gap, ideal))
 					if wait > 0 {
 						time.Sleep(wait)
 					}
 				}
 				timeStamp = time.Now()
 				msg := timeStamp.Format(format) + "/" + randMsg + topic
-				log.Debug(fmt.Sprintf("topic:%s, ts:%s", topic, timeStamp.Format(format)))
+				logger.Debug(fmt.Sprintf("topic:%s, ts:%s", topic, timeStamp.Format(format)))
 				//logger.Info(msg)
 
 				token := p.Publish(topic, qos, retain, msg)

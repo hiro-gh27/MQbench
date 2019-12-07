@@ -1,6 +1,6 @@
 {
-  "level": "debug",
-  "encoding": "json",
+  "level": "INFO",
+  "encoding": "console",
   "encoderConfig": {
     "messageKey": "Msg",
     "levelKey": "Level",

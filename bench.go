@@ -1,11 +1,12 @@
 package main
 
 import (
-	"MQbench/pkg/pubsub"
+	"MQbench/pubsub"
 	"bufio"
 	"encoding/json"
 	"flag"
 	"fmt"
+	"go.uber.org/zap/zapcore"
 	"io/ioutil"
 
 	"math"
@@ -17,7 +18,6 @@ import (
 	"time"
 
 	"github.com/eclipse/paho.mqtt.golang"
-	log "github.com/sirupsen/logrus"
 	"go.uber.org/zap"
 )
 
@@ -95,9 +95,6 @@ func (x pubSort) Less(i, j int) bool {
 func (x pubSort) Swap(i, j int) { x[i], x[j] = x[j], x[i] }
 
 func main() {
-	log.SetReportCaller(true)
-	log.SetLevel(log.TraceLevel)
-
 	rand.Seed(time.Now().UnixNano())
 	runtime.GOMAXPROCS(runtime.NumCPU())
 	timeLocation, _ = time.LoadLocation("Asia/Tokyo")
@@ -111,9 +108,15 @@ func main() {
 	if err := json.Unmarshal(configJSON, &myConfig); err != nil {
 		panic(err)
 	}
+	myConfig.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
 	logger, _ = myConfig.Build()
+	zap.ReplaceGlobals(logger)
+	// いい方法考えたいが...
+	pubsub.Init()
+
 	defer logger.Sync()
 
+	logger.Info("Hello")
 	/*
 	   ここから実行メソッド
 	*/
@@ -150,7 +153,7 @@ func main() {
 
 	sort.Sort(pubSort(targetSubscribeData))
 
-	log.Info("execute start time is: %s\n", evaluateStartTime)
+	logger.Info("execute start", zap.Time("time", evaluateStartTime))
 
 	/** 評価の計算式をここから **/
 	data := eliminate(publishData, targetSubscribeData)
@@ -218,14 +221,14 @@ func main() {
 	if first {
 		_, err := writer.WriteString(fmt.Sprintf("publish[msg/ms], ingress [msg/ms],egress [msg/ms],latecy [ms],total msg,lost msg,Definition [%%],lost rate [%%]\n"))
 		if err != nil {
-			log.Fatal(err)
+			logger.Error("cannot write", zap.Error(err))
 		}
 	}
 	expotData := fmt.Sprintf("%f,%f,%f,%f,%d,%d,%f,%f\n",
 		originPublishThroughput, publishThroughput, subscribeThroughput, mRTT, publishMessageCounter, int(lostNum), ratio, lostRatio)
 	_, err = writer.WriteString(expotData)
 	if err != nil {
-		log.Fatal(err)
+		logger.Error("cannot write", zap.Error(err))
 	}
 
 	writer.Flush()
@@ -239,20 +242,21 @@ func newFile(fn string) (*os.File, bool) {
 	_, exist := os.Stat(fn)
 	fp, err := os.OpenFile(fn, os.O_WRONLY|os.O_CREATE|os.O_APPEND, 0644)
 	if err != nil {
-		log.Fatal(err)
+		logger.Error("cannt open", zap.Error(err))
 	}
 	return fp, os.IsNotExist(exist)
 }
 
 func trimming(data []pubsub.PubSubTimeStamp, start time.Time, end time.Time) []pubsub.PubSubTimeStamp {
-	log.Info("check good subscribe data START, =%d\n", len(data))
+	logger.Info("check good subscribe data START", zap.Int("len(result)", len(data)))
 	var result []pubsub.PubSubTimeStamp
 	for _, d := range data {
 		if d.Published.Sub(start) > 0 && d.Published.Sub(end) < 0 {
 			result = append(result, d)
 		}
 	}
-	log.Info("check good subscribe data END, len(subscribeData)=%d\n", len(result))
+	logger.Info("check good subscribe data END", zap.Int("len(result)", len(result)))
+
 	return result
 }
 
@@ -279,19 +283,20 @@ func launcher() {
 	configurations.Size = size
 	configurations.Load = load
 	configurations.Retain = retain
-	log.Debug(configurations)
+
+	logger.Debug("configurations", zap.Any("config", configurations))
 
 	exportFile = fmt.Sprintf("%s[load=%f]", b[:len(b)-5], load)
-	log.Info("export file name is %s\n", exportFile)
+	logger.Info("export file name is", zap.String("file", exportFile))
 
 	brokersJSON := fmt.Sprintf("./exp/%s", *brokersFlag)
 	byteS, err := ioutil.ReadFile(brokersJSON)
 	if err != nil {
-		log.Fatal(err)
+		logger.Error("cannot read", zap.Error(err))
 	}
 	var brokers []broker
 	if err := json.Unmarshal(byteS, &brokers); err != nil {
-		log.Fatal(err)
+		logger.Error("cannot Unmarshal", zap.Error(err))
 	}
 
 	factory := pubsub.NewClientFactory()
@@ -323,9 +328,11 @@ func execute(publishers []mqtt.Client) []time.Time {
 			var pts []time.Time
 			p := publishers[index]
 			topic := fmt.Sprintf("%05d", index)
-			fmt.Printf("publish topic%s\n", topic)
 			firstSleepDuration := getRandomInterval(maxInterval)
-			logger.Info(fmt.Sprintf("first: %s", firstSleepDuration))
+
+			//fmt.Printf("publish topic%s\n", topic)
+			//logger.Info(fmt.Sprintf("first: %s", firstSleepDuration))
+			logger.Info("Setup is complete in Publisher", zap.String("topic", topic), zap.Duration("first sleep", firstSleepDuration))
 
 			redy.Wait()
 			startTS := time.Now()
@@ -335,20 +342,30 @@ func execute(publishers []mqtt.Client) []time.Time {
 					gap := time.Now().Sub(startTS)
 					ideal := time.Duration(maxInterval * 1000 * 1000 * float64(count))
 					wait := ideal - gap
-					logger.Debug(fmt.Sprintf("gap=%s, ideal=%s\n", gap, ideal))
+
 					if wait > 0 {
+						logger.Debug("waiting next publish",
+							zap.Duration("gap", gap),
+							zap.Duration("ideal", ideal),
+							zap.Duration("wait", wait))
 						time.Sleep(wait)
+					} else {
+						logger.Warn("May be publish is delayed due to lack of performance",
+							zap.Duration("gap", gap),
+							zap.Duration("ideal", ideal),
+							zap.Duration("wait", wait))
 					}
 				}
 				timeStamp = time.Now()
-				msg := timeStamp.Format(stampMQTT) + "/" + randMsg + topic
-				logger.Debug(fmt.Sprintf("topic:%s, ts:%s", topic, timeStamp.Format(stampMQTT)))
-				//logger.Info(msg)
-
+				formattedTimeStamp := timeStamp.Format(stampMQTT)
+				msg := formattedTimeStamp + "/" + randMsg + topic
 				token := p.Publish(topic, configurations.Qos, retain, msg)
+
 				if token.Wait() && token.Error() != nil {
 					fmt.Printf("publish error: %s\n", token.Error())
 				} else {
+					logger.Debug("publish is complete",
+						zap.String("topic", topic), zap.String("time stamp", formattedTimeStamp))
 					pts = append(pts, timeStamp)
 				}
 

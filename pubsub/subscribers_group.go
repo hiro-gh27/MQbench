@@ -72,7 +72,7 @@ func (sb *SubscribersGroup) ExecuteAsync(endLock *sync.WaitGroup) chan []PubSubT
 		}
 
 		var rvals []PubSubTimeStamp
-		fmt.Println("wait start in setSubscribers")
+		logger.Info("wait start in setSubscribers")
 
 		endLock.Wait()
 

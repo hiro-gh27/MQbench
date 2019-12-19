@@ -18,5 +18,6 @@ func CalMillisecondThroughput(timeStamps []time.Time) float64 {
 	duration := timeStamps[len(timeStamps)-1].Sub(timeStamps[0])
 	millisecondDuration := float64(duration.Nanoseconds()) / math.Pow10(6)
 	throughtput := float64(len(timeStamps)) / millisecondDuration
+	logger.Info("cal result", zap.Duration("total", duration), zap.Float64("msg/ms", throughtput))
 	return throughtput
 }

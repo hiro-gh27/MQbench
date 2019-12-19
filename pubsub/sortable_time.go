@@ -12,8 +12,8 @@ type SortableTime struct {
 
 func NewSortableTime(times []time.Time) *SortableTime {
 	st := &SortableTime{
-		inner: times,
 	}
+	copy(st.inner, times)
 	return st
 }
 

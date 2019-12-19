@@ -4,16 +4,18 @@ import (
 	"MQbench/pubsub"
 	"bufio"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"go.uber.org/zap/zapcore"
 	"io/ioutil"
-
 	"math"
 	"math/rand"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -40,9 +42,9 @@ var (
 var (
 	evaluateStartTime time.Time
 
-	warmUp     = time.Second * 3
-	production = time.Second * 3
-	coolDown   = time.Second * 3
+	warmUp     = time.Second * 5
+	production = time.Second * 5
+	coolDown   = time.Second * 5
 
 	exportFile string
 )
@@ -94,29 +96,61 @@ func (x pubSort) Less(i, j int) bool {
 }
 func (x pubSort) Swap(i, j int) { x[i], x[j] = x[j], x[i] }
 
+func exist(s string) bool {
+	_, err := os.Stat(s)
+	return err == nil
+}
+
+func openJsonFromEnvPriority() ([]byte, error) {
+	firstPath := "../config/logging.json" // from bin
+	secondPath := "./config/logging.json" // from run bench.go
+	paths := []string{firstPath, secondPath}
+	for _, path := range paths {
+		if exist(path) {
+			jsonFile, hasError := ioutil.ReadFile(path)
+			if hasError == nil {
+				return jsonFile, nil
+			}
+		}
+	}
+	e := errors.New("there is not logging.json")
+	return nil, e
+}
+
+func getLoggerFromConfigIfExist() (*zap.Logger, error) {
+	jsonFile, err := openJsonFromEnvPriority()
+	if err != nil {
+		return nil, err
+	}
+
+	var zapLoggerConfig zap.Config
+	if err := json.Unmarshal(jsonFile, &zapLoggerConfig); err != nil {
+		return nil, err
+	}
+	zapLoggerConfig.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
+	logger, err := zapLoggerConfig.Build()
+	if err != nil {
+		return nil, err
+	}
+	return logger, nil
+}
+
 func main() {
 	rand.Seed(time.Now().UnixNano())
 	runtime.GOMAXPROCS(runtime.NumCPU())
 	timeLocation, _ = time.LoadLocation("Asia/Tokyo")
 
 	//logの初期化
-	configJSON, err := ioutil.ReadFile("./config/logging.json")
+	log, err := getLoggerFromConfigIfExist()
 	if err != nil {
-		panic(err)
+		log, _ = zap.NewDevelopment()
+		log.Error("", zap.Error(err))
 	}
-	var myConfig zap.Config
-	if err := json.Unmarshal(configJSON, &myConfig); err != nil {
-		panic(err)
-	}
-	myConfig.EncoderConfig.EncodeLevel = zapcore.CapitalColorLevelEncoder
-	logger, _ = myConfig.Build()
+	logger = log
 	zap.ReplaceGlobals(logger)
-	// いい方法考えたいが...
 	pubsub.Init()
-
 	defer logger.Sync()
 
-	logger.Info("Hello")
 	/*
 	   ここから実行メソッド
 	*/
@@ -128,7 +162,7 @@ func main() {
 	sb := pubsub.NewSubscribersGroup(subscribers)
 	sbFuture := sb.ExecuteAsync(subGroupFinishLook)
 
-	fmt.Println("実行待ち")
+	logger.Info("---- waiting execution ----")
 	time.Sleep(20 * time.Second)
 	publishData := execute(publishers)
 
@@ -142,9 +176,8 @@ func main() {
 	time.Sleep(5 * time.Second)
 	subGroupFinishLook.Done()
 	originalSubscribeTimes := <-sbFuture
-	//subscribingFuture.Wait()
 
-	fmt.Println("実行終了")
+	logger.Info("---- finish execution ----")
 
 	//var evaluateData []pubsubTimeStamp
 	start := evaluateStartTime.Add(warmUp)
@@ -172,7 +205,9 @@ func main() {
 		totalDurationNano += eSubStamp[index].Sub(ePubStamp[index]).Nanoseconds()
 	}
 
-	fmt.Printf("tRttNanoDuration=%d\n", totalDurationNano)
+	//fmt.Printf("tRttNanoDuration=%d\n", totalDurationNano)
+	logger.Info("Total Nanosecond Duration", zap.Int64("duration", totalDurationNano))
+
 	RTT := float64(totalDurationNano / int64(len(evaluateData)))
 	mRTT := RTT / math.Pow10(6)
 	if RTT > math.Pow10(9) {
@@ -214,7 +249,13 @@ func main() {
 	/**
 	 * データ出力していきます
 	 **/
-	filePath := fmt.Sprintf("/Users/hiroki/Downloads/%s.csv", exportFile)
+	programName := getExportDirectoryFromProgramArgsWithTrimming()
+	path := "./results/" + programName + "/"
+	if !exist(path) {
+		_ = os.MkdirAll(path, 0755)
+	}
+
+	filePath := fmt.Sprintf(path+programName+"_"+"%s.csv", exportFile)
 	fp, first := newFile(filePath)
 	writer := bufio.NewWriter(fp)
 
@@ -236,6 +277,12 @@ func main() {
 
 	pubsub.DisconnectALL(publishers)
 	sb.Fin()
+}
+func getExportDirectoryFromProgramArgsWithTrimming() string {
+	dirName := filepath.Base(os.Args[0])
+	dirName = strings.Split(dirName, " ")[0]
+	dirName = strings.Replace(dirName, "./", "", -1)
+	return dirName
 }
 
 func newFile(fn string) (*os.File, bool) {
@@ -267,7 +314,7 @@ func launcher() {
 	sizeFlag := flag.Int("size", 100, "Message size per publish (byte)")
 	loadFlag := flag.Float64("load", 5, "publish/ms")
 	loggingFileFlag := flag.String("logging file", "NONE", "Base file name")
-	brokersFlag := flag.String("broker", "NONE.json", "json")
+	brokersFlag := flag.String("broker", "DEFAULT.json", "json")
 	flag.Parse()
 
 	topic = *topicFlag
@@ -289,7 +336,7 @@ func launcher() {
 	exportFile = fmt.Sprintf("%s[load=%f]", b[:len(b)-5], load)
 	logger.Info("export file name is", zap.String("file", exportFile))
 
-	brokersJSON := fmt.Sprintf("./exp/%s", *brokersFlag)
+	brokersJSON := fmt.Sprintf("./benchmark_case/%s", *brokersFlag)
 	byteS, err := ioutil.ReadFile(brokersJSON)
 	if err != nil {
 		logger.Error("cannot read", zap.Error(err))
